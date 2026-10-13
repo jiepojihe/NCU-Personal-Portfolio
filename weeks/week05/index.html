@@ -18,6 +18,8 @@
   .stage { position: relative; }
   canvas {
     display: block;
+    touch-action: none;      /* 触摸拖动时不被页面滚动手势劫持 */
+    user-select: none;
     border-radius: 14px;
     box-shadow: 0 0 40px rgba(80, 200, 255, .12),
                 0 0 2px  rgba(80, 200, 255, .35);
@@ -37,7 +39,7 @@
 <body>
 <div class="stage">
   <canvas id="pendulum" width="900" height="620"></canvas>
-  <div class="tips">SPACE 暂停 / 继续 &nbsp;·&nbsp; R 重置</div>
+  <div class="tips">拖动摆球 → 松手甩出 &nbsp;·&nbsp; SPACE 暂停 &nbsp;·&nbsp; R 重置</div>
 </div>
 
 <script>
@@ -64,6 +66,10 @@
   let omega = 0;           // 角速度（rad/s）
   let paused = false;
   let lastT = null;
+  let dragging = false;    // 是否正在用鼠标/手指拖动摆球
+  let dragSamples = [];    // 拖动轨迹采样，用于估算松手瞬间的角速度
+  let hoverOnBob = false;  // 鼠标是否悬停在摆球上（用于光标与高亮）
+  const HIT_RADIUS = 28;   // 摆球"可抓取"判定半径（像素，比球体略大更好点）
 
   const canvas = document.getElementById("pendulum");
   const ctx    = canvas.getContext("2d");
@@ -150,33 +156,52 @@
   }
 
   function drawBob(bx, by) {
-    // 微弱发光光晕
+    const hovered = !dragging && hoverOnBob;
+    const r = dragging ? 19 : (hovered ? 17.5 : 16);
+    // 微弱发光光晕（拖动时增强，形成"抓在手里"的反馈）
     ctx.save();
-    ctx.shadowColor = "rgba(96, 210, 255, 0.9)";
-    ctx.shadowBlur = 26;
-    const g = ctx.createRadialGradient(bx - 5, by - 6, 2, bx, by, 17);
+    ctx.shadowColor = dragging ? "rgba(140, 235, 255, 1)" : "rgba(96, 210, 255, 0.9)";
+    ctx.shadowBlur = dragging ? 40 : (hovered ? 33 : 26);
+    const g = ctx.createRadialGradient(bx - 5, by - 6, 2, bx, by, r + 1);
     g.addColorStop(0, "#eaf9ff");
-    g.addColorStop(0.45, "#7fd4ff");
-    g.addColorStop(1, "#1f6fa8");
+    g.addColorStop(0.45, dragging ? "#a9e6ff" : "#7fd4ff");
+    g.addColorStop(1, dragging ? "#2a8ac4" : "#1f6fa8");
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.arc(bx, by, 16, 0, Math.PI * 2);
+    ctx.arc(bx, by, r, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
+
+    // 拖动时绕球画一圈虚线指示环
+    if (dragging) {
+      ctx.save();
+      ctx.strokeStyle = "rgba(160, 235, 255, 0.55)";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.arc(bx, by, r + 9, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   function drawHud() {
-    const deg = (theta * 180 / Math.PI);
+    // 转圈时 θ 会无限累积，按整圈折算，显示等效摆角 + 圈数
+    const turns = Math.floor((theta + Math.PI) / (2 * Math.PI));
+    const norm  = theta - turns * 2 * Math.PI;
+    const deg   = norm * 180 / Math.PI;
+    const turnTag = turns !== 0 ? ` (${turns > 0 ? "+" : ""}${turns} 圈)` : "";
     ctx.font = "13px Consolas, monospace";
     ctx.fillStyle = "rgba(150, 210, 250, 0.85)";
     ctx.textAlign = "left";
-    ctx.fillText(`θ  = ${deg.toFixed(1).padStart(7)} °`, 22, 30);
+    ctx.fillText(`θ  = ${deg.toFixed(1).padStart(7)} °${turnTag}`, 22, 30);
     ctx.fillText(`ω  = ${omega.toFixed(3).padStart(7)} rad/s`, 22, 52);
     ctx.fillText(`T  ≈ ${T_THEORY.toFixed(3)} s (小角理论)`, 22, 74);
     ctx.fillText(`L = ${L.toFixed(1)} m (200px)   g = ${G} m/s²   c = ${DAMPING}`, 22, 96);
     ctx.textAlign = "right";
-    ctx.fillStyle = "rgba(150, 210, 250, 0.5)";
-    ctx.fillText(paused ? "[ PAUSED ]" : "[ RUNNING ]", W - 22, 30);
+    const state = dragging ? "[ DRAGGING ]" : (paused ? "[ PAUSED ]" : "[ RUNNING ]");
+    ctx.fillStyle = dragging ? "rgba(140, 235, 255, 0.95)" : "rgba(150, 210, 250, 0.5)";
+    ctx.fillText(state, W - 22, 30);
   }
 
   function render() {
@@ -197,7 +222,7 @@
     lastT = t;
     if (dt > 1 / 30) dt = 1 / 30;          // 切后台回来防止时间跳变
 
-    if (!paused) {
+    if (!paused && !dragging) {            // 拖动期间由鼠标接管位置，暂停物理积分
       const sub = 4, h = dt / sub;         // 子步长积分，提高数值稳定性
       for (let i = 0; i < sub; i++) step(h);
       trail.push({ x: bobX(), y: bobY() });
@@ -217,6 +242,83 @@
     if (e.code === "Space") { e.preventDefault(); paused = !paused; }
     if (e.code === "KeyR") reset();
   });
+
+  /* ---------- 鼠标 / 触摸拖动摆球 ---------- */
+
+  // 把浏览器窗口坐标换算成画布坐标（兼容页面缩放 / 高 DPI）
+  function toCanvas(e) {
+    const r = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - r.left) * (canvas.width  / r.width),
+      y: (e.clientY - r.top ) * (canvas.height / r.height)
+    };
+  }
+
+  // 由鼠标位置反解摆角：θ = atan2(dx, dy)，其中 θ=0 表示竖直向下
+  function angleFromPoint(p) {
+    return Math.atan2(p.x - pivot.x, p.y - pivot.y);
+  }
+
+  function hitBob(p) {
+    return Math.hypot(p.x - bobX(), p.y - bobY()) <= HIT_RADIUS;
+  }
+
+  canvas.addEventListener("pointerdown", (e) => {
+    const p = toCanvas(e);
+    if (!hitBob(p)) return;              // 没点中摆球 → 不响应
+    dragging = true;
+    paused = false;
+    dragSamples = [];
+    theta = angleFromPoint(p);           // 立刻对齐到指针位置
+    omega = 0;
+    trail.length = 0;
+    if (canvas.setPointerCapture) canvas.setPointerCapture(e.pointerId);
+    canvas.style.cursor = "grabbing";
+    e.preventDefault();
+  });
+
+  canvas.addEventListener("pointermove", (e) => {
+    const p = toCanvas(e);
+    if (!dragging) {
+      hoverOnBob = hitBob(p);
+      canvas.style.cursor = hoverOnBob ? "grab" : "default";
+      return;
+    }
+    const dx = p.x - pivot.x, dy = p.y - pivot.y;
+    if (Math.hypot(dx, dy) < 6) return;  // 太靠近悬挂点，角度无意义 → 忽略
+    const newTheta = angleFromPoint(p);
+    const now = performance.now();
+    dragSamples.push({ t: now, th: newTheta });
+    // 只保留最近 120ms 的采样，用于估算松手速度
+    while (dragSamples.length > 1 && now - dragSamples[0].t > 120) dragSamples.shift();
+    theta = newTheta;                    // 摆球严格跟随指针（摆长保持恒定）
+    e.preventDefault();
+  });
+
+  function endDrag(e) {
+    if (!dragging) return;
+    dragging = false;
+    // 用最近一段拖动数据估算"甩出去"的角速度 ω = Δθ / Δt
+    let w = 0;
+    if (dragSamples.length >= 2) {
+      const a = dragSamples[0];
+      const b = dragSamples[dragSamples.length - 1];
+      const dt = (b.t - a.t) / 1000;
+      if (dt > 0.002) {
+        let dth = b.th - a.th;
+        while (dth >  Math.PI) dth -= Math.PI * 2;   // 处理 ±180° 跨接处的角度环绕
+        while (dth < -Math.PI) dth += Math.PI * 2;
+        w = dth / dt;
+      }
+    }
+    omega = Math.max(-14, Math.min(14, w));          // 限幅，防止甩得过猛
+    dragSamples = [];
+    hoverOnBob = false;
+    canvas.style.cursor = "default";
+    try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+  }
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", endDrag);
 })();
 </script>
 </body>
