@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>单摆物理模拟器 MVP · 冯禹馨 6601126057</title>
+<title>单摆 / 双摆 物理模拟器 · 冯禹馨 6601126057</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
@@ -31,52 +31,61 @@
     transform: translateX(-50%);
     color: rgba(160, 190, 220, .55);
     font-size: 12px;
-    letter-spacing: 2px;
+    letter-spacing: 1.5px;
     user-select: none;
+    white-space: nowrap;
   }
 </style>
 </head>
 <body>
 <div class="stage">
   <canvas id="pendulum" width="900" height="620"></canvas>
-  <div class="tips">拖动摆球 → 松手甩出 &nbsp;·&nbsp; SPACE 暂停 &nbsp;·&nbsp; R 重置</div>
+  <div class="tips">拖动摆球 → 松手甩出 &nbsp;·&nbsp; M 单摆 / 双摆 &nbsp;·&nbsp; SPACE 暂停 &nbsp;·&nbsp; R 重置</div>
 </div>
 
 <script>
 (() => {
   "use strict";
 
-  /* ================= 物理参数（课程指定） =================
-   * 摆长 L = 200px；比例尺 100px = 1m → 物理摆长 2.0m
-   * 重力 g = 9.8 m/s²（课程指定）
-   * 若直接把 200px 当作摆长数值代入，周期会长达 ~28 秒，
-   * 视觉上无法满足"流畅左右摆动"的验收标准，
-   * 因此引入比例尺换算，保证物理意义与动画效果兼得。
-   * ====================================================== */
+  /* ================= 物理参数 =================
+   * 单摆（课程指定）：摆长 L = 200px，g = 9.8 m/s²，初始角 45°
+   * 比例尺 100px = 1m → 物理摆长 2.0m。
+   * 若直接把 200px 当数值代入，周期会长达 ~28 秒，视觉上无法
+   * 满足"流畅摆动"的验收要求，故引入比例尺换算。
+   * 双摆：两段等长等质量，混沌系统。
+   * ============================================ */
   const PX_PER_M  = 100;                     // 比例尺：100px = 1m
-  const L_PX      = 200;                     // 摆长（屏幕像素，课程指定）
-  const L         = L_PX / PX_PER_M;         // 摆长（米）= 2.0
-  const G         = 9.8;                     // 重力加速度（课程指定）
-  const DAMPING   = 0.05;                    // 阻尼系数（缓慢衰减，带阻尼简谐振动）
-  const THETA0    = 45 * Math.PI / 180;      // 初始摆角 45°（课程指定）
-  const T_THEORY  = 2 * Math.PI * Math.sqrt(L / G);  // 小角近似理论周期
+  const L_PX      = 200;                     // 每段摆长（屏幕像素）
+  const L         = L_PX / PX_PER_M;         // 每段摆长（米）= 2.0
+  const G         = 9.8;                     // 重力加速度
+  const DAMPING   = 0.05;                    // 阻尼系数（缓慢衰减）
+  const THETA0    = 45 * Math.PI / 180;      // 初始摆角 45°（单摆 / 双摆第一段）
+  const THETA2_0  = 50 * Math.PI / 180;      // 双摆第二段初始角（错开一点更易看出混沌）
+  const M1        = 1, M2 = 1;               // 双摆两球质量
+  const T_THEORY  = 2 * Math.PI * Math.sqrt(L / G);   // 单摆小角理论周期
 
   /* ================= 状态 ================= */
-  let theta = THETA0;      // 当前摆角（rad，0 = 竖直向下）
-  let omega = 0;           // 角速度（rad/s）
+  // 支持用 URL 参数直接进入双摆：index.html?dual=1 或 index.html#dual
+  let dualMode = /(\?|&)dual(=|&|#|$)|\#dual/.test(location.search + location.hash);
+
+  let theta = THETA0, omega = 0;     // 单摆：角度 / 角速度
+  let th1 = THETA0, w1 = 0;          // 双摆：第一段
+  let th2 = THETA2_0, w2 = 0;        // 双摆：第二段
+
   let paused = false;
   let lastT = null;
-  let dragging = false;    // 是否正在用鼠标/手指拖动摆球
-  let dragSamples = [];    // 拖动轨迹采样，用于估算松手瞬间的角速度
-  let hoverOnBob = false;  // 鼠标是否悬停在摆球上（用于光标与高亮）
-  const HIT_RADIUS = 28;   // 摆球"可抓取"判定半径（像素，比球体略大更好点）
+  let dragging = false;
+  let dragTarget = null;             // 正在拖动谁："single" | "p1" | "p2"
+  let dragSamples = [];              // 拖动采样，用于估算松手速度
+  let hoverTarget = null;            // 悬停目标
+  const HIT_RADIUS = 28;             // 可抓取判定半径
 
   const canvas = document.getElementById("pendulum");
   const ctx    = canvas.getContext("2d");
   const W = canvas.width, H = canvas.height;
   const pivot = { x: W / 2, y: 96 };         // 悬挂点
 
-  /* 背景星点（静态装饰，一次性生成） */
+  /* 背景星点 */
   const stars = Array.from({ length: 70 }, () => ({
     x: Math.random() * W,
     y: Math.random() * H,
@@ -84,18 +93,65 @@
     a: Math.random() * 0.35 + 0.08
   }));
 
-  /* 摆球轨迹（渐隐光轨） */
+  /* 末端摆球轨迹（渐隐光轨） */
   const trail = [];
-  const TRAIL_MAX = 70;
 
-  const bobX = () => pivot.x + L_PX * Math.sin(theta);
-  const bobY = () => pivot.y + L_PX * Math.cos(theta);
+  /* ================= 几何：各球位置 ================= */
+  function singleBob() {
+    return { x: pivot.x + L_PX * Math.sin(theta), y: pivot.y + L_PX * Math.cos(theta) };
+  }
+  function p1Pos() {
+    return { x: pivot.x + L_PX * Math.sin(th1), y: pivot.y + L_PX * Math.cos(th1) };
+  }
+  function p2Pos() {
+    const a = p1Pos();
+    return { x: a.x + L_PX * Math.sin(th2), y: a.y + L_PX * Math.cos(th2) };
+  }
+  function tipPos() { return dualMode ? p2Pos() : singleBob(); }
 
-  /* ================= 物理：θ'' = -(g/L)sinθ - c·θ' ================= */
-  function step(h) {
+  /* ================= 物理 ================= */
+  // 单摆：θ'' = -(g/L)·sinθ - c·θ'
+  function stepSingle(h) {
     const alpha = -(G / L) * Math.sin(theta) - DAMPING * omega;
-    omega += alpha * h;      // 半隐式欧拉（能量稳定，适合实时仿真）
+    omega += alpha * h;      // 半隐式欧拉（能量稳定）
     theta += omega * h;
+  }
+
+  // 双摆：拉格朗日方程导出的标准运动方程（等长双摆通用形式）
+  //   θ1'' 、θ2'' 见下方 a1 / a2
+  function stepDual(h) {
+    const d   = th1 - th2;
+    const sin = Math.sin(d), cos = Math.cos(d);
+    const den = 2 * M1 + M2 - M2 * Math.cos(2 * d);
+
+    const a1 = (
+      -G * (2 * M1 + M2) * Math.sin(th1)
+      - M2 * G * Math.sin(th1 - 2 * th2)
+      - 2 * sin * M2 * (w2 * w2 * L + w1 * w1 * L * cos)
+    ) / (L * den);
+
+    const a2 = (
+      2 * sin * (
+        w1 * w1 * L * (M1 + M2)
+        + G * (M1 + M2) * Math.cos(th1)
+        + w2 * w2 * L * M2 * cos
+      )
+    ) / (L * den);
+
+    w1 += (a1 - DAMPING * w1) * h;
+    w2 += (a2 - DAMPING * w2) * h;
+    th1 += w1 * h;
+    th2 += w2 * h;
+  }
+
+  /* 双摆总机械能（单位质量，用于观察混沌中的能量衰减） */
+  function dualEnergy() {
+    const K = 0.5 * M1 * L * L * w1 * w1
+            + 0.5 * M2 * (L * L * w1 * w1 + L * L * w2 * w2
+                          + 2 * L * L * w1 * w2 * Math.cos(th1 - th2));
+    const U = -M1 * G * L * Math.cos(th1)
+            - M2 * G * (L * Math.cos(th1) + L * Math.cos(th2));
+    return K + U;
   }
 
   /* ================= 渲染 ================= */
@@ -130,12 +186,12 @@
     ctx.fill();
   }
 
-  function drawTrail() {
+  function drawTrail(rgb) {
     if (trail.length < 2) return;
     for (let i = 1; i < trail.length; i++) {
       const t = i / trail.length;
-      ctx.strokeStyle = `rgba(96, 210, 255, ${(t * 0.35).toFixed(3)})`;
-      ctx.lineWidth = t * 2.2;
+      ctx.strokeStyle = `rgba(${rgb}, ${(t * 0.38).toFixed(3)})`;
+      ctx.lineWidth = t * 2.4;
       ctx.beginPath();
       ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
       ctx.lineTo(trail[i].x, trail[i].y);
@@ -143,74 +199,121 @@
     }
   }
 
-  function drawRod(bx, by) {
-    const g = ctx.createLinearGradient(pivot.x, pivot.y, bx, by);
-    g.addColorStop(0, "rgba(190,220,255,0.9)");
-    g.addColorStop(1, "rgba(120,200,255,0.55)");
+  // 任意两点之间的摆杆
+  function drawRod(x1, y1, x2, y2, bright) {
+    const g = ctx.createLinearGradient(x1, y1, x2, y2);
+    g.addColorStop(0, bright ? "rgba(215,235,255,0.95)" : "rgba(190,220,255,0.9)");
+    g.addColorStop(1, bright ? "rgba(160,220,255,0.75)" : "rgba(120,200,255,0.55)");
     ctx.strokeStyle = g;
     ctx.lineWidth = 1.6;
     ctx.beginPath();
-    ctx.moveTo(pivot.x, pivot.y);
-    ctx.lineTo(bx, by);
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
     ctx.stroke();
   }
 
-  function drawBob(bx, by) {
-    const hovered = !dragging && hoverOnBob;
-    const r = dragging ? 19 : (hovered ? 17.5 : 16);
-    // 微弱发光光晕（拖动时增强，形成"抓在手里"的反馈）
+  // 发光摆球；palette: "cyan" | "violet"；active: 是否被悬停/拖动
+  function drawBob(bx, by, r, active, palette) {
+    const isDrag  = dragging && active;
+    const isHot   = isDrag || active;
+    const rr      = isDrag ? r + 3 : (active ? r + 1.5 : r);
+
+    const mid      = palette === "violet" ? (isDrag ? "#cbb8ff" : "#b39bff") : (isDrag ? "#a9e6ff" : "#7fd4ff");
+    const edge     = palette === "violet" ? (isDrag ? "#6b4fc0" : "#5a3fa8") : (isDrag ? "#2a8ac4" : "#1f6fa8");
+    const glowCol  = palette === "violet" ? "rgba(168, 150, 255," : "rgba(96, 210, 255,";
+
     ctx.save();
-    ctx.shadowColor = dragging ? "rgba(140, 235, 255, 1)" : "rgba(96, 210, 255, 0.9)";
-    ctx.shadowBlur = dragging ? 40 : (hovered ? 33 : 26);
-    const g = ctx.createRadialGradient(bx - 5, by - 6, 2, bx, by, r + 1);
+    ctx.shadowColor = `${glowCol} ${isDrag ? 1 : 0.9})`;
+    ctx.shadowBlur  = isDrag ? 40 : (active ? 33 : 26);
+    const g = ctx.createRadialGradient(bx - r * 0.3, by - r * 0.4, 2, bx, by, rr + 1);
     g.addColorStop(0, "#eaf9ff");
-    g.addColorStop(0.45, dragging ? "#a9e6ff" : "#7fd4ff");
-    g.addColorStop(1, dragging ? "#2a8ac4" : "#1f6fa8");
+    g.addColorStop(0.45, mid);
+    g.addColorStop(1, edge);
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.arc(bx, by, r, 0, Math.PI * 2);
+    ctx.arc(bx, by, rr, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
 
-    // 拖动时绕球画一圈虚线指示环
-    if (dragging) {
+    if (isDrag) {
       ctx.save();
-      ctx.strokeStyle = "rgba(160, 235, 255, 0.55)";
+      ctx.strokeStyle = `${glowCol} 0.55)`;
       ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
-      ctx.arc(bx, by, r + 9, 0, Math.PI * 2);
+      ctx.arc(bx, by, rr + 9, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
     }
   }
 
+  /* 角度归一化显示（转圈时按整圈折算） */
+  function normDeg(a) {
+    const turns = Math.floor((a + Math.PI) / (2 * Math.PI));
+    const norm  = a - turns * 2 * Math.PI;
+    return { deg: norm * 180 / Math.PI, turns };
+  }
+
   function drawHud() {
-    // 转圈时 θ 会无限累积，按整圈折算，显示等效摆角 + 圈数
-    const turns = Math.floor((theta + Math.PI) / (2 * Math.PI));
-    const norm  = theta - turns * 2 * Math.PI;
-    const deg   = norm * 180 / Math.PI;
-    const turnTag = turns !== 0 ? ` (${turns > 0 ? "+" : ""}${turns} 圈)` : "";
     ctx.font = "13px Consolas, monospace";
-    ctx.fillStyle = "rgba(150, 210, 250, 0.85)";
     ctx.textAlign = "left";
-    ctx.fillText(`θ  = ${deg.toFixed(1).padStart(7)} °${turnTag}`, 22, 30);
-    ctx.fillText(`ω  = ${omega.toFixed(3).padStart(7)} rad/s`, 22, 52);
-    ctx.fillText(`T  ≈ ${T_THEORY.toFixed(3)} s (小角理论)`, 22, 74);
-    ctx.fillText(`L = ${L.toFixed(1)} m (200px)   g = ${G} m/s²   c = ${DAMPING}`, 22, 96);
+    ctx.fillStyle = "rgba(150, 210, 250, 0.85)";
+
+    if (!dualMode) {
+      const n = normDeg(theta);
+      const tag = n.turns !== 0 ? ` (${n.turns > 0 ? "+" : ""}${n.turns} 圈)` : "";
+      ctx.fillText(`θ  = ${n.deg.toFixed(1).padStart(7)} °${tag}`, 22, 30);
+      ctx.fillText(`ω  = ${omega.toFixed(3).padStart(7)} rad/s`, 22, 52);
+      ctx.fillText(`T  ≈ ${T_THEORY.toFixed(3)} s (小角理论)`, 22, 74);
+      ctx.fillText(`L = ${L.toFixed(1)} m (200px)   g = ${G} m/s²   c = ${DAMPING}`, 22, 96);
+    } else {
+      ctx.fillText(`θ1 = ${(th1 * 180 / Math.PI).toFixed(1).padStart(7)} °    ω1 = ${w1.toFixed(2).padStart(6)} rad/s`, 22, 30);
+      ctx.fillText(`θ2 = ${(th2 * 180 / Math.PI).toFixed(1).padStart(7)} °    ω2 = ${w2.toFixed(2).padStart(6)} rad/s`, 22, 52);
+      ctx.fillText(`E  = ${dualEnergy().toFixed(2).padStart(7)} J/kg  (机械能，混沌中渐衰减)`, 22, 74);
+      ctx.fillText(`L1 = L2 = ${L.toFixed(1)} m (200px)   m1 = m2 = ${M1}   g = ${G}   c = ${DAMPING}`, 22, 96);
+    }
+
+    // 右上：模式 + 状态
     ctx.textAlign = "right";
+    ctx.fillStyle = dualMode ? "rgba(180, 165, 255, 0.9)" : "rgba(150, 210, 250, 0.75)";
+    ctx.fillText(dualMode ? "[ 双摆 DOUBLE ]" : "[ 单摆 SINGLE ]", W - 22, 30);
+    ctx.fillStyle = dragging ? "rgba(140, 235, 255, 0.95)" : "rgba(150, 210, 250, 0.45)";
     const state = dragging ? "[ DRAGGING ]" : (paused ? "[ PAUSED ]" : "[ RUNNING ]");
-    ctx.fillStyle = dragging ? "rgba(140, 235, 255, 0.95)" : "rgba(150, 210, 250, 0.5)";
-    ctx.fillText(state, W - 22, 30);
+    ctx.fillText(state, W - 22, 52);
+
+    // 双摆：左上角两段颜色图例
+    if (dualMode) {
+      ctx.textAlign = "left";
+      ctx.font = "11px Consolas, monospace";
+      ctx.fillStyle = "rgba(179, 155, 255, 0.8)";
+      ctx.fillText("● 第一段 (紫)", 22, 120);
+      ctx.fillStyle = "rgba(127, 212, 255, 0.8)";
+      ctx.fillText("● 第二段 (青)", 22, 138);
+    }
+  }
+
+  function activeOf(target) {
+    return dragging ? (dragTarget === target) : (hoverTarget === target);
   }
 
   function render() {
     drawBackground();
-    drawTrail();
-    const bx = bobX(), by = bobY();
-    drawRod(bx, by);
-    drawCeiling();
-    drawBob(bx, by);
+
+    if (!dualMode) {
+      drawTrail("96, 210, 255");
+      const b = singleBob();
+      drawRod(pivot.x, pivot.y, b.x, b.y);
+      drawCeiling();
+      drawBob(b.x, b.y, 16, activeOf("single"), "cyan");
+    } else {
+      const a = p1Pos(), b = p2Pos();
+      drawTrail("150, 140, 255");                 // 双摆轨迹用紫青色，更好看
+      drawRod(pivot.x, pivot.y, a.x, a.y);
+      drawRod(a.x, a.y, b.x, b.y, true);
+      drawCeiling();
+      drawBob(a.x, a.y, 11, activeOf("p1"), "violet");
+      drawBob(b.x, b.y, 16, activeOf("p2"), "cyan");
+    }
     drawHud();
   }
 
@@ -222,11 +325,16 @@
     lastT = t;
     if (dt > 1 / 30) dt = 1 / 30;          // 切后台回来防止时间跳变
 
-    if (!paused && !dragging) {            // 拖动期间由鼠标接管位置，暂停物理积分
-      const sub = 4, h = dt / sub;         // 子步长积分，提高数值稳定性
-      for (let i = 0; i < sub; i++) step(h);
-      trail.push({ x: bobX(), y: bobY() });
-      if (trail.length > TRAIL_MAX) trail.shift();
+    if (!paused && !dragging) {
+      const sub = dualMode ? 8 : 4;        // 双摆方程更"刚性"，用更多子步长
+      const h = dt / sub;
+      for (let i = 0; i < sub; i++) {
+        if (dualMode) stepDual(h); else stepSingle(h);
+      }
+      const tip = tipPos();
+      trail.push({ x: tip.x, y: tip.y });
+      const maxLen = dualMode ? 260 : 70;  // 双摆轨迹更长，混沌图案更漂亮
+      while (trail.length > maxLen) trail.shift();
     }
     render();
   }
@@ -234,18 +342,26 @@
 
   /* ================= 交互 ================= */
   function reset() {
-    theta = THETA0;
-    omega = 0;
+    theta = THETA0; omega = 0;
+    th1 = THETA0; w1 = 0;
+    th2 = THETA2_0; w2 = 0;
     trail.length = 0;
   }
+
+  function toggleMode() {
+    dualMode = !dualMode;
+    reset();
+  }
+
   window.addEventListener("keydown", (e) => {
     if (e.code === "Space") { e.preventDefault(); paused = !paused; }
     if (e.code === "KeyR") reset();
+    if (e.code === "KeyM") toggleMode();
   });
 
-  /* ---------- 鼠标 / 触摸拖动摆球 ---------- */
+  /* ---------- 鼠标 / 触摸拖动 ---------- */
 
-  // 把浏览器窗口坐标换算成画布坐标（兼容页面缩放 / 高 DPI）
+  // 浏览器坐标 → 画布坐标（兼容页面缩放 / 高 DPI）
   function toCanvas(e) {
     const r = canvas.getBoundingClientRect();
     return {
@@ -254,23 +370,52 @@
     };
   }
 
-  // 由鼠标位置反解摆角：θ = atan2(dx, dy)，其中 θ=0 表示竖直向下
-  function angleFromPoint(p) {
-    return Math.atan2(p.x - pivot.x, p.y - pivot.y);
+  // 命中检测：返回被点中的目标
+  function hitTest(p) {
+    if (!dualMode) {
+      const b = singleBob();
+      return Math.hypot(p.x - b.x, p.y - b.y) <= HIT_RADIUS ? "single" : null;
+    }
+    const b = p2Pos(), a = p1Pos();
+    if (Math.hypot(p.x - b.x, p.y - b.y) <= HIT_RADIUS) return "p2";
+    if (Math.hypot(p.x - a.x, p.y - a.y) <= HIT_RADIUS) return "p1";
+    return null;
   }
 
-  function hitBob(p) {
-    return Math.hypot(p.x - bobX(), p.y - bobY()) <= HIT_RADIUS;
+  // 指针位置 → 该目标的摆角
+  function dragAngle(target, p) {
+    if (target === "p2") {
+      const a = p1Pos();
+      return Math.atan2(p.x - a.x, p.y - a.y);   // 相对第一段末端
+    }
+    return Math.atan2(p.x - pivot.x, p.y - pivot.y);   // 相对悬挂点
+  }
+
+  function applyDrag(target, ang) {
+    if (target === "single") theta = ang;
+    else if (target === "p1") th1 = ang;
+    else th2 = ang;
+  }
+
+  function applyOmega(target, w) {
+    const wc = Math.max(-14, Math.min(14, w));
+    if (target === "single") omega = wc;
+    else if (target === "p1") w1 = wc;
+    else w2 = wc;
   }
 
   canvas.addEventListener("pointerdown", (e) => {
     const p = toCanvas(e);
-    if (!hitBob(p)) return;              // 没点中摆球 → 不响应
+    const target = hitTest(p);
+    if (!target) return;                 // 没点中任何球 → 不响应
     dragging = true;
+    dragTarget = target;
     paused = false;
     dragSamples = [];
-    theta = angleFromPoint(p);           // 立刻对齐到指针位置
-    omega = 0;
+    applyDrag(target, dragAngle(target, p));
+    if (target === "single") omega = 0;
+    else if (target === "p1") w1 = 0;
+    else w2 = 0;
     trail.length = 0;
     if (canvas.setPointerCapture) canvas.setPointerCapture(e.pointerId);
     canvas.style.cursor = "grabbing";
@@ -279,26 +424,30 @@
 
   canvas.addEventListener("pointermove", (e) => {
     const p = toCanvas(e);
+
     if (!dragging) {
-      hoverOnBob = hitBob(p);
-      canvas.style.cursor = hoverOnBob ? "grab" : "default";
+      hoverTarget = hitTest(p);
+      canvas.style.cursor = hoverTarget ? "grab" : "default";
       return;
     }
-    const dx = p.x - pivot.x, dy = p.y - pivot.y;
-    if (Math.hypot(dx, dy) < 6) return;  // 太靠近悬挂点，角度无意义 → 忽略
-    const newTheta = angleFromPoint(p);
+
+    // 参考点：拖第二段时以第一段末端为圆心，否则以悬挂点为圆心
+    const ref = (dragTarget === "p2") ? p1Pos() : pivot;
+    if (Math.hypot(p.x - ref.x, p.y - ref.y) < 6) return;   // 太靠近圆心，角度无意义
+
+    const ang = dragAngle(dragTarget, p);
     const now = performance.now();
-    dragSamples.push({ t: now, th: newTheta });
-    // 只保留最近 120ms 的采样，用于估算松手速度
+    dragSamples.push({ t: now, th: ang });
     while (dragSamples.length > 1 && now - dragSamples[0].t > 120) dragSamples.shift();
-    theta = newTheta;                    // 摆球严格跟随指针（摆长保持恒定）
+    applyDrag(dragTarget, ang);          // 摆球严格跟随指针（摆长恒定）
     e.preventDefault();
   });
 
   function endDrag(e) {
     if (!dragging) return;
     dragging = false;
-    // 用最近一段拖动数据估算"甩出去"的角速度 ω = Δθ / Δt
+
+    // 用最近 120ms 的采样估算"甩出"的角速度 ω = Δθ / Δt
     let w = 0;
     if (dragSamples.length >= 2) {
       const a = dragSamples[0];
@@ -306,14 +455,16 @@
       const dt = (b.t - a.t) / 1000;
       if (dt > 0.002) {
         let dth = b.th - a.th;
-        while (dth >  Math.PI) dth -= Math.PI * 2;   // 处理 ±180° 跨接处的角度环绕
+        while (dth >  Math.PI) dth -= Math.PI * 2;   // 处理 ±180° 环绕
         while (dth < -Math.PI) dth += Math.PI * 2;
         w = dth / dt;
       }
     }
-    omega = Math.max(-14, Math.min(14, w));          // 限幅，防止甩得过猛
+    if (dragTarget) applyOmega(dragTarget, w);
+
     dragSamples = [];
-    hoverOnBob = false;
+    dragTarget = null;
+    hoverTarget = null;
     canvas.style.cursor = "default";
     try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
   }
