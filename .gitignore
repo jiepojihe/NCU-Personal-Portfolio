@@ -1,0 +1,140 @@
+# ============================================================
+#  .gitignore  —— 冯禹馨 / 6601126057 / 护理学 / 课程作品集
+#  作用：告诉 Git 哪些文件/文件夹"不要管"，避免把垃圾文件
+#        （系统临时文件、IDE 缓存、密码、编译产物等）传上 GitHub。
+# ============================================================
+
+# ---------- 操作系统临时文件 ----------
+# Windows
+Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.fuse_hidden*
+.Trash-*
+
+# ---------- IDE / 编辑器 ----------
+# Visual Studio Code
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# JetBrains (IntelliJ / PyCharm / WebStorm 等)
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.sln.docstates
+
+# Eclipse / MyEclipse
+.classpath
+.project
+.settings/
+bin/
+
+# Sublime / Vim / Emacs
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+\#*\#
+.\#*
+
+# ---------- 编程语言 / 运行环境 ----------
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv/
+.env
+.env.local
+.env.*.local
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Node / JavaScript
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dist/
+build/
+.next/
+.nuxt/
+.cache/
+.parcel-cache/
+
+# Java
+*.class
+*.jar
+*.war
+*.ear
+target/
+.gradle/
+build/
+
+# C / C++
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
+
+# ---------- 日志 / 临时文件 ----------
+*.log
+logs/
+*.tmp
+*.bak
+*.swp
+*.swo
+*.orig
+*.rej
+
+# ---------- 大文件 / 敏感信息 ----------
+# 上传数据集（按需取消注释）
+# *.csv
+# *.xlsx
+# data/raw/
+
+# 密钥、证书、凭据（绝对不要上传）
+*.pem
+*.key
+*.crt
+secrets/
+credentials/
+*.secret
+
+# ---------- 项目自定义 ----------
+# 个人草稿
+drafts/
+scratch/
+TODO.local.md
