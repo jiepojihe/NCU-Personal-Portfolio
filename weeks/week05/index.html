@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>单摆物理模拟器 MVP · 冯禹馨 6601126057</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    background: #1a1a24;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    overflow: hidden;
+  }
+  .stage { position: relative; }
+  canvas {
+    display: block;
+    border-radius: 14px;
+    box-shadow: 0 0 40px rgba(80, 200, 255, .12),
+                0 0 2px  rgba(80, 200, 255, .35);
+  }
+  .tips {
+    position: absolute;
+    left: 50%;
+    bottom: 14px;
+    transform: translateX(-50%);
+    color: rgba(160, 190, 220, .55);
+    font-size: 12px;
+    letter-spacing: 2px;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<div class="stage">
+  <canvas id="pendulum" width="900" height="620"></canvas>
+  <div class="tips">SPACE 暂停 / 继续 &nbsp;·&nbsp; R 重置</div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  /* ================= 物理参数（课程指定） =================
+   * 摆长 L = 200px；比例尺 100px = 1m → 物理摆长 2.0m
+   * 重力 g = 9.8 m/s²（课程指定）
+   * 若直接把 200px 当作摆长数值代入，周期会长达 ~28 秒，
+   * 视觉上无法满足"流畅左右摆动"的验收标准，
+   * 因此引入比例尺换算，保证物理意义与动画效果兼得。
+   * ====================================================== */
+  const PX_PER_M  = 100;                     // 比例尺：100px = 1m
+  const L_PX      = 200;                     // 摆长（屏幕像素，课程指定）
+  const L         = L_PX / PX_PER_M;         // 摆长（米）= 2.0
+  const G         = 9.8;                     // 重力加速度（课程指定）
+  const DAMPING   = 0.05;                    // 阻尼系数（缓慢衰减，带阻尼简谐振动）
+  const THETA0    = 45 * Math.PI / 180;      // 初始摆角 45°（课程指定）
+  const T_THEORY  = 2 * Math.PI * Math.sqrt(L / G);  // 小角近似理论周期
+
+  /* ================= 状态 ================= */
+  let theta = THETA0;      // 当前摆角（rad，0 = 竖直向下）
+  let omega = 0;           // 角速度（rad/s）
+  let paused = false;
+  let lastT = null;
+
+  const canvas = document.getElementById("pendulum");
+  const ctx    = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  const pivot = { x: W / 2, y: 96 };         // 悬挂点
+
+  /* 背景星点（静态装饰，一次性生成） */
+  const stars = Array.from({ length: 70 }, () => ({
+    x: Math.random() * W,
+    y: Math.random() * H,
+    r: Math.random() * 1.3 + 0.3,
+    a: Math.random() * 0.35 + 0.08
+  }));
+
+  /* 摆球轨迹（渐隐光轨） */
+  const trail = [];
+  const TRAIL_MAX = 70;
+
+  const bobX = () => pivot.x + L_PX * Math.sin(theta);
+  const bobY = () => pivot.y + L_PX * Math.cos(theta);
+
+  /* ================= 物理：θ'' = -(g/L)sinθ - c·θ' ================= */
+  function step(h) {
+    const alpha = -(G / L) * Math.sin(theta) - DAMPING * omega;
+    omega += alpha * h;      // 半隐式欧拉（能量稳定，适合实时仿真）
+    theta += omega * h;
+  }
+
+  /* ================= 渲染 ================= */
+  function drawBackground() {
+    ctx.fillStyle = "#1a1a24";
+    ctx.fillRect(0, 0, W, H);
+    for (const s of stars) {
+      ctx.globalAlpha = s.a;
+      ctx.fillStyle = "#9fd8ff";
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawCeiling() {
+    const w = 150;
+    const g = ctx.createLinearGradient(pivot.x - w, 0, pivot.x + w, 0);
+    g.addColorStop(0,   "rgba(90,110,140,0)");
+    g.addColorStop(0.5, "rgba(140,170,210,0.85)");
+    g.addColorStop(1,   "rgba(90,110,140,0)");
+    ctx.strokeStyle = g;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(pivot.x - w, pivot.y);
+    ctx.lineTo(pivot.x + w, pivot.y);
+    ctx.stroke();
+    ctx.fillStyle = "#cfe8ff";
+    ctx.beginPath();
+    ctx.arc(pivot.x, pivot.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawTrail() {
+    if (trail.length < 2) return;
+    for (let i = 1; i < trail.length; i++) {
+      const t = i / trail.length;
+      ctx.strokeStyle = `rgba(96, 210, 255, ${(t * 0.35).toFixed(3)})`;
+      ctx.lineWidth = t * 2.2;
+      ctx.beginPath();
+      ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
+      ctx.lineTo(trail[i].x, trail[i].y);
+      ctx.stroke();
+    }
+  }
+
+  function drawRod(bx, by) {
+    const g = ctx.createLinearGradient(pivot.x, pivot.y, bx, by);
+    g.addColorStop(0, "rgba(190,220,255,0.9)");
+    g.addColorStop(1, "rgba(120,200,255,0.55)");
+    ctx.strokeStyle = g;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(pivot.x, pivot.y);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
+  }
+
+  function drawBob(bx, by) {
+    // 微弱发光光晕
+    ctx.save();
+    ctx.shadowColor = "rgba(96, 210, 255, 0.9)";
+    ctx.shadowBlur = 26;
+    const g = ctx.createRadialGradient(bx - 5, by - 6, 2, bx, by, 17);
+    g.addColorStop(0, "#eaf9ff");
+    g.addColorStop(0.45, "#7fd4ff");
+    g.addColorStop(1, "#1f6fa8");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(bx, by, 16, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawHud() {
+    const deg = (theta * 180 / Math.PI);
+    ctx.font = "13px Consolas, monospace";
+    ctx.fillStyle = "rgba(150, 210, 250, 0.85)";
+    ctx.textAlign = "left";
+    ctx.fillText(`θ  = ${deg.toFixed(1).padStart(7)} °`, 22, 30);
+    ctx.fillText(`ω  = ${omega.toFixed(3).padStart(7)} rad/s`, 22, 52);
+    ctx.fillText(`T  ≈ ${T_THEORY.toFixed(3)} s (小角理论)`, 22, 74);
+    ctx.fillText(`L = ${L.toFixed(1)} m (200px)   g = ${G} m/s²   c = ${DAMPING}`, 22, 96);
+    ctx.textAlign = "right";
+    ctx.fillStyle = "rgba(150, 210, 250, 0.5)";
+    ctx.fillText(paused ? "[ PAUSED ]" : "[ RUNNING ]", W - 22, 30);
+  }
+
+  function render() {
+    drawBackground();
+    drawTrail();
+    const bx = bobX(), by = bobY();
+    drawRod(bx, by);
+    drawCeiling();
+    drawBob(bx, by);
+    drawHud();
+  }
+
+  /* ================= 主循环：requestAnimationFrame 驱动 ================= */
+  function frame(t) {
+    requestAnimationFrame(frame);
+    if (lastT === null) lastT = t;
+    let dt = (t - lastT) / 1000;
+    lastT = t;
+    if (dt > 1 / 30) dt = 1 / 30;          // 切后台回来防止时间跳变
+
+    if (!paused) {
+      const sub = 4, h = dt / sub;         // 子步长积分，提高数值稳定性
+      for (let i = 0; i < sub; i++) step(h);
+      trail.push({ x: bobX(), y: bobY() });
+      if (trail.length > TRAIL_MAX) trail.shift();
+    }
+    render();
+  }
+  requestAnimationFrame(frame);
+
+  /* ================= 交互 ================= */
+  function reset() {
+    theta = THETA0;
+    omega = 0;
+    trail.length = 0;
+  }
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "Space") { e.preventDefault(); paused = !paused; }
+    if (e.code === "KeyR") reset();
+  });
+})();
+</script>
+</body>
+</html>
