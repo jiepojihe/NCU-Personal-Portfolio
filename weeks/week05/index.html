@@ -40,7 +40,7 @@
 <body>
 <div class="stage">
   <canvas id="pendulum" width="900" height="620"></canvas>
-  <div class="tips">拖动摆球 → 松手甩出 &nbsp;·&nbsp; M 单摆 / 双摆 &nbsp;·&nbsp; SPACE 暂停 &nbsp;·&nbsp; R 重置</div>
+  <div class="tips">拖动摆球或摆杆 → 松手甩出 &nbsp;·&nbsp; M 单摆 / 双摆 &nbsp;·&nbsp; SPACE 暂停 &nbsp;·&nbsp; R 重置</div>
 </div>
 
 <script>
@@ -200,12 +200,17 @@
   }
 
   // 任意两点之间的摆杆
-  function drawRod(x1, y1, x2, y2, bright) {
+  function drawRod(x1, y1, x2, y2, bright, active) {
     const g = ctx.createLinearGradient(x1, y1, x2, y2);
-    g.addColorStop(0, bright ? "rgba(215,235,255,0.95)" : "rgba(190,220,255,0.9)");
-    g.addColorStop(1, bright ? "rgba(160,220,255,0.75)" : "rgba(120,200,255,0.55)");
+    if (active) {                              // 被抓住 / 悬停时高亮加粗
+      g.addColorStop(0, "rgba(235,252,255,1)");
+      g.addColorStop(1, "rgba(150,240,255,0.95)");
+    } else {
+      g.addColorStop(0, bright ? "rgba(215,235,255,0.95)" : "rgba(190,220,255,0.9)");
+      g.addColorStop(1, bright ? "rgba(160,220,255,0.75)" : "rgba(120,200,255,0.55)");
+    }
     ctx.strokeStyle = g;
-    ctx.lineWidth = 1.6;
+    ctx.lineWidth = active ? 2.8 : 1.6;
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
@@ -302,14 +307,14 @@
     if (!dualMode) {
       drawTrail("96, 210, 255");
       const b = singleBob();
-      drawRod(pivot.x, pivot.y, b.x, b.y);
+      drawRod(pivot.x, pivot.y, b.x, b.y, false, activeOf("single"));
       drawCeiling();
       drawBob(b.x, b.y, 16, activeOf("single"), "cyan");
     } else {
       const a = p1Pos(), b = p2Pos();
       drawTrail("150, 140, 255");                 // 双摆轨迹用紫青色，更好看
-      drawRod(pivot.x, pivot.y, a.x, a.y);
-      drawRod(a.x, a.y, b.x, b.y, true);
+      drawRod(pivot.x, pivot.y, a.x, a.y, false, activeOf("p1"));
+      drawRod(a.x, a.y, b.x, b.y, true, activeOf("p2"));
       drawCeiling();
       drawBob(a.x, a.y, 11, activeOf("p1"), "violet");
       drawBob(b.x, b.y, 16, activeOf("p2"), "cyan");
@@ -370,15 +375,31 @@
     };
   }
 
-  // 命中检测：返回被点中的目标
+  // 点到线段的最短距离（用于判断指针是否落在摆杆上）
+  function distToSegment(p, a, b) {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 > 0 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2 : 0;
+    t = t < 0 ? 0 : (t > 1 ? 1 : t);           // 投影点夹在线段内
+    return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+  }
+
+  const ROD_HIT = 14;                          // 摆杆可抓取的容差（像素）
+
+  // 命中检测：返回被点中的目标（优先摆球，其次摆杆）
   function hitTest(p) {
     if (!dualMode) {
       const b = singleBob();
-      return Math.hypot(p.x - b.x, p.y - b.y) <= HIT_RADIUS ? "single" : null;
+      if (Math.hypot(p.x - b.x, p.y - b.y) <= HIT_RADIUS) return "single";
+      if (distToSegment(p, pivot, b) <= ROD_HIT) return "single";   // 抓住杆也能拖
+      return null;
     }
     const b = p2Pos(), a = p1Pos();
     if (Math.hypot(p.x - b.x, p.y - b.y) <= HIT_RADIUS) return "p2";
     if (Math.hypot(p.x - a.x, p.y - a.y) <= HIT_RADIUS) return "p1";
+    // 摆杆：先判第二段，避免与第一段在 p1 处重叠时误判
+    if (distToSegment(p, a, b) <= ROD_HIT) return "p2";
+    if (distToSegment(p, pivot, a) <= ROD_HIT) return "p1";
     return null;
   }
 
